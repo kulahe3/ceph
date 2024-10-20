@@ -375,7 +375,7 @@ public:
   }
   void check_blocklisted_watchers() final;
   void clear_primary_state() final {
-    // Not needed yet
+    recovery_finisher = nullptr;
   }
 
   void queue_check_readable(epoch_t last_peering_reset,
@@ -394,7 +394,7 @@ public:
   void on_replica_activate() final;
   void on_activate_complete() final;
   void on_new_interval() final {
-    // Not needed yet
+    recovery_finisher = nullptr;
   }
   Context *on_clean() final;
   void on_activate_committed() final {
@@ -621,7 +621,7 @@ public:
   void dump_primary(Formatter*);
   interruptible_future<> complete_error_log(const ceph_tid_t& rep_tid,
                                        const eversion_t& version);
-  interruptible_future<std::optional<eversion_t>> submit_error_log(
+  interruptible_future<eversion_t> submit_error_log(
     Ref<MOSDOp> m,
     const OpInfo &op_info,
     ObjectContextRef obc,
@@ -645,41 +645,35 @@ private:
     }
   } background_process_lock;
 
-  using do_osd_ops_ertr = crimson::errorator<
-   crimson::ct_error::eagain>;
-  using do_osd_ops_iertr =
-    ::crimson::interruptible::interruptible_errorator<
-      ::crimson::osd::IOInterruptCondition,
-      ::crimson::errorator<crimson::ct_error::eagain>>;
-  template <typename Ret = void>
-  using pg_rep_op_fut_t =
-    std::tuple<interruptible_future<>,
-               do_osd_ops_iertr::future<Ret>>;
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<MURef<MOSDOpReply>>> do_osd_ops(
-    Ref<MOSDOp> m,
-    crimson::net::ConnectionXcoreRef conn,
+  using run_executer_ertr = crimson::compound_errorator_t<
+    OpsExecuter::osd_op_errorator,
+    crimson::errorator<
+      crimson::ct_error::edquot,
+      crimson::ct_error::eagain,
+      crimson::ct_error::enospc
+      >
+    >;
+  using run_executer_iertr = crimson::interruptible::interruptible_errorator<
+    ::crimson::osd::IOInterruptCondition,
+    run_executer_ertr>;
+  using run_executer_fut = run_executer_iertr::future<>;
+  run_executer_fut run_executer(
+    OpsExecuter &ox,
     ObjectContextRef obc,
     const OpInfo &op_info,
-    const SnapContext& snapc);
+    std::vector<OSDOp>& ops);
+
+  using submit_executer_ret = std::tuple<
+    interruptible_future<>,
+    interruptible_future<>>;
+  using submit_executer_fut = interruptible_future<
+    submit_executer_ret>;
+  submit_executer_fut submit_executer(
+    OpsExecuter &&ox,
+    const std::vector<OSDOp>& ops);
 
   struct do_osd_ops_params_t;
-  do_osd_ops_iertr::future<MURef<MOSDOpReply>> log_reply(
-    Ref<MOSDOp> m,
-    const std::error_code& e);
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<>> do_osd_ops(
-    ObjectContextRef obc,
-    std::vector<OSDOp>& ops,
-    const OpInfo &op_info,
-    const do_osd_ops_params_t &&params);
-  template <class Ret, class SuccessFunc, class FailureFunc>
-  do_osd_ops_iertr::future<pg_rep_op_fut_t<Ret>> do_osd_ops_execute(
-    seastar::lw_shared_ptr<OpsExecuter> ox,
-    ObjectContextRef obc,
-    const OpInfo &op_info,
-    Ref<MOSDOp> m,
-    std::vector<OSDOp>& ops,
-    SuccessFunc&& success_func,
-    FailureFunc&& failure_func);
+
   interruptible_future<MURef<MOSDOpReply>> do_pg_ops(Ref<MOSDOp> m);
   interruptible_future<
     std::tuple<interruptible_future<>, interruptible_future<>>>
@@ -712,9 +706,17 @@ public:
   }
   seastar::future<> stop();
 private:
+  class C_PG_FinishRecovery : public Context {
+  public:
+    explicit C_PG_FinishRecovery(PG &pg) : pg(pg) {}
+    void finish(int r) override;
+  private:
+    PG& pg;
+  };
   std::unique_ptr<PGBackend> backend;
   std::unique_ptr<RecoveryBackend> recovery_backend;
   std::unique_ptr<PGRecovery> recovery_handler;
+  C_PG_FinishRecovery *recovery_finisher;
 
   PeeringState peering_state;
   eversion_t projected_last_update;

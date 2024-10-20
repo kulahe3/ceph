@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 import xml.etree.ElementTree as ET  # noqa: N814
+from collections import defaultdict
 from enum import Enum
 from subprocess import SubprocessError
 from urllib.parse import urlparse
@@ -288,21 +289,22 @@ class RgwClient(RestClient):
 
         daemon_keys = RgwClient._daemons.keys()
         if not daemon_name:
-            if len(daemon_keys) > 1:
-                try:
-                    multiiste = RgwMultisite()
-                    default_zonegroup = multiiste.get_all_zonegroups_info()['default_zonegroup']
-
-                    # Iterate through _daemons.values() to find the daemon with the
-                    # matching zonegroup_id
-                    for daemon in RgwClient._daemons.values():
-                        if daemon.zonegroup_id == default_zonegroup:
-                            daemon_name = daemon.name
-                            break
-                except Exception:  # pylint: disable=broad-except
-                    daemon_name = next(iter(daemon_keys))
-            else:
-                # Handle the case where there is only one or no key in _daemons
+            try:
+                if len(daemon_keys) > 1:
+                    default_zonegroup = (
+                        RgwMultisite()
+                        .get_all_zonegroups_info()['default_zonegroup']
+                    )
+                    if default_zonegroup:
+                        daemon_name = next(
+                            (daemon.name
+                             for daemon in RgwClient._daemons.values()
+                             if daemon.zonegroup_id == default_zonegroup),
+                            None
+                        )
+                daemon_name = daemon_name or next(iter(daemon_keys))
+            except Exception as e:  # pylint: disable=broad-except
+                logger.exception('Failed to determine default RGW daemon: %s', str(e))
                 daemon_name = next(iter(daemon_keys))
 
         # Discard all cached instances if any rgw setting has changed
@@ -700,12 +702,28 @@ class RgwClient(RestClient):
             raise DashboardException(msg=str(e), component='rgw')
         return result
 
+    @staticmethod
+    def _handle_rules(pairs):
+        result = defaultdict(list)
+        for key, value in pairs:
+            if key == 'Rule':
+                result['Rules'].append(value)
+            else:
+                result[key] = value
+        return result
+
     @RestClient.api_get('/{bucket_name}?lifecycle')
     def get_lifecycle(self, bucket_name, request=None):
         # pylint: disable=unused-argument
         try:
-            result = request()  # type: ignore
-            result = {'LifecycleConfiguration': result}
+            decoded_request = request(raw_content=True).decode("utf-8")  # type: ignore
+            result = {
+                'LifecycleConfiguration':
+                json.loads(
+                    decoded_request,
+                    object_pairs_hook=RgwClient._handle_rules
+                )
+            }
         except RequestException as e:
             if e.content:
                 content = json_str_to_object(e.content)
@@ -757,15 +775,15 @@ class RgwClient(RestClient):
             lifecycle = RgwClient.dict_to_xml(lifecycle)
         try:
             if lifecycle and '<LifecycleConfiguration>' not in str(lifecycle):
-                lifecycle = f'<LifecycleConfiguration>{lifecycle}</LifecycleConfiguration>'
+                lifecycle = f'<LifecycleConfiguration>\n{lifecycle}\n</LifecycleConfiguration>'
             result = request(data=lifecycle)  # type: ignore
         except RequestException as e:
+            msg = ''
             if e.content:
                 content = json_str_to_object(e.content)
                 if content.get("Code") == "MalformedXML":
                     msg = "Invalid Lifecycle document"
-                    raise DashboardException(msg=msg, component='rgw')
-            raise DashboardException(msg=str(e), component='rgw')
+            raise DashboardException(msg=msg or str(e), component='rgw')
         return result
 
     @RestClient.api_delete('/{bucket_name}?lifecycle')
@@ -1981,8 +1999,16 @@ class RgwMultisite:
             is_multisite_configured = False
         return is_multisite_configured
 
-    def get_multisite_sync_status(self):
+    def get_multisite_sync_status(self, daemon_name: str):
         rgw_multisite_sync_status_cmd = ['sync', 'status']
+        daemons = _get_daemons()
+        try:
+            realm_name = daemons[daemon_name].realm_name
+        except (KeyError, AttributeError):
+            raise DashboardException('Unable to get realm name from daemon',
+                                     http_status_code=500, component='rgw')
+        if realm_name:
+            rgw_multisite_sync_status_cmd.extend(['--rgw-realm', realm_name])
         try:
             exit_code, out, _ = mgr.send_rgwadmin_command(rgw_multisite_sync_status_cmd, False)
             if exit_code > 0:
@@ -2236,7 +2262,8 @@ class RgwMultisite:
                          source_bucket: str = '',
                          destination_bucket: str = '',
                          bucket_name: str = '',
-                         update_period=False):
+                         update_period=False,
+                         user: str = '', mode: str = ''):
 
         if source_zones['added'] or destination_zones['added']:
             rgw_sync_policy_cmd = ['sync', 'group', 'pipe', 'create',
@@ -2245,17 +2272,21 @@ class RgwMultisite:
             if bucket_name:
                 rgw_sync_policy_cmd += ['--bucket', bucket_name]
 
-            if source_bucket:
-                rgw_sync_policy_cmd += ['--source-bucket', source_bucket]
+            rgw_sync_policy_cmd += ['--source-bucket', source_bucket]
 
-            if destination_bucket:
-                rgw_sync_policy_cmd += ['--dest-bucket', destination_bucket]
+            rgw_sync_policy_cmd += ['--dest-bucket', destination_bucket]
 
             if source_zones['added']:
                 rgw_sync_policy_cmd += ['--source-zones', ','.join(source_zones['added'])]
 
             if destination_zones['added']:
                 rgw_sync_policy_cmd += ['--dest-zones', ','.join(destination_zones['added'])]
+
+            if user:
+                rgw_sync_policy_cmd += ['--uid', user]
+
+            if mode:
+                rgw_sync_policy_cmd += ['--mode', mode]
 
             logger.info("Creating sync pipe!")
             try:
@@ -2271,13 +2302,13 @@ class RgwMultisite:
         if ((source_zones['removed'] and '*' not in source_zones['added'])
                 or (destination_zones['removed'] and '*' not in destination_zones['added'])):
             self.remove_sync_pipe(group_id, pipe_id, source_zones['removed'],
-                                  destination_zones['removed'], destination_bucket,
-                                  bucket_name)
+                                  destination_zones['removed'],
+                                  bucket_name, True)
 
     def remove_sync_pipe(self, group_id: str, pipe_id: str,
                          source_zones: Optional[List[str]] = None,
                          destination_zones: Optional[List[str]] = None,
-                         destination_bucket: str = '', bucket_name: str = '',
+                         bucket_name: str = '',
                          update_period=False):
         rgw_sync_policy_cmd = ['sync', 'group', 'pipe', 'remove',
                                '--group-id', group_id, '--pipe-id', pipe_id]
@@ -2290,9 +2321,6 @@ class RgwMultisite:
 
         if destination_zones:
             rgw_sync_policy_cmd += ['--dest-zones', ','.join(destination_zones)]
-
-        if destination_bucket:
-            rgw_sync_policy_cmd += ['--dest-bucket', destination_bucket]
 
         logger.info("Removing sync pipe! %s", rgw_sync_policy_cmd)
         try:

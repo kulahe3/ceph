@@ -1,4 +1,4 @@
-import { Component, Input, OnChanges, OnInit } from '@angular/core';
+import { Component, Input, OnInit } from '@angular/core';
 import { Router } from '@angular/router';
 import { NvmeofService } from '~/app/shared/api/nvmeof.service';
 import { CriticalConfirmationModalComponent } from '~/app/shared/components/critical-confirmation-modal/critical-confirmation-modal.component';
@@ -21,7 +21,7 @@ const BASE_URL = 'block/nvmeof/subsystems';
   templateUrl: './nvmeof-listeners-list.component.html',
   styleUrls: ['./nvmeof-listeners-list.component.scss']
 })
-export class NvmeofListenersListComponent implements OnInit, OnChanges {
+export class NvmeofListenersListComponent implements OnInit {
   @Input()
   subsystemNQN: string;
   @Input()
@@ -76,13 +76,9 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
         name: this.actionLabels.DELETE,
         permission: 'delete',
         icon: Icons.destroy,
-        click: () => this.deleteSubsystemModal()
+        click: () => this.deleteListenerModal()
       }
     ];
-  }
-
-  ngOnChanges() {
-    this.listListeners();
   }
 
   updateSelection(selection: CdTableSelection) {
@@ -91,7 +87,7 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
 
   listListeners() {
     this.nvmeofService
-      .listListeners(this.subsystemNQN)
+      .listListeners(this.subsystemNQN, this.group)
       .subscribe((listResponse: NvmeofListener[]) => {
         this.listeners = listResponse.map((listener, index) => {
           listener['id'] = index;
@@ -101,7 +97,7 @@ export class NvmeofListenersListComponent implements OnInit, OnChanges {
       });
   }
 
-  deleteSubsystemModal() {
+  deleteListenerModal() {
     const listener = this.selection.first();
     this.modalService.show(CriticalConfirmationModalComponent, {
       itemDescription: 'Listener',

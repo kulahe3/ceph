@@ -96,7 +96,10 @@ class CephadmServe:
                 if not self.mgr.paused:
                     self._run_async_actions()
 
-                    self.mgr.to_remove_osds.process_removal_queue()
+                    removal_queue_result = self.mgr.to_remove_osds.process_removal_queue()
+                    self.log.debug(f'process_removal_queue() returned = {removal_queue_result}')
+                    if removal_queue_result:
+                        continue
 
                     self.mgr.migration.migrate()
                     if self.mgr.migration.is_migration_ongoing():
@@ -949,6 +952,10 @@ class CephadmServe:
                         f'Not deploying node-proxy agent on {slot.hostname} as oob details are not present.'
                     )
                     continue
+
+                # set multisite config before deploying the rgw daemon
+                if service_type == 'rgw':
+                    self.mgr.rgw_service.set_realm_zg_zone(cast(RGWSpec, spec))
 
                 # deploy new daemon
                 daemon_id = slot.name
