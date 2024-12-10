@@ -1815,6 +1815,10 @@ def wait_for_healthy_cluster(self, timeout=300):
         """
         if no_wait is None:
             no_wait = []
+  # New: Ensure the cluster is healthy before proceeding
+    self.log.info("Checking cluster health before flushing PG stats.")  # New Line
+    self.wait_for_healthy_cluster(timeout=300)  # New Line
+    self.log.info("Cluster is healthy. Proceeding with PG stats flush.")  # New Line
 
         def flush_one_osd(osd: int, wait_for_mon: int):
             need = int(self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats'))
@@ -1839,7 +1843,53 @@ def wait_for_healthy_cluster(self, timeout=300):
 
         with parallel() as p:
             for osd in osds:
-                p.spawn(flush_one_osd, osd, wait_for_mon)
+                p.spawn(flush_one_osd, osd, wait_for_mon)def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
+    """
+    Flush pg stats from a list of OSD ids, ensuring they are reflected
+    all the way to the monitor.  Luminous and later only.
+
+    :param osds: list of OSDs to flush
+    :param no_wait: list of OSDs not to wait for seq id. by default, we
+                    wait for all specified osds, but some of them could be
+                    moved out of osdmap, so we cannot get their updated
+                    stat seq from monitor anymore. in that case, you need
+                    to pass a blocklist.
+    :param wait_for_mon: wait for mon to be synced with mgr. 0 to disable
+                         it. (5 min by default)
+    """
+    if no_wait is None:
+        no_wait = []
+
+    # Ensure the cluster is healthy before proceeding
+    self.log.info("Checking cluster health before flushing PG stats.")
+    self.wait_for_healthy_cluster(timeout=300)  # Adjust timeout as needed
+    self.log.info("Cluster is healthy. Proceeding with PG stats flush.")
+
+    def flush_one_osd(osd: int, wait_for_mon: int):
+        need = int(self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats'))
+        if not wait_for_mon:
+            return
+        if osd in no_wait:
+            return
+        got = 0
+        while wait_for_mon > 0:
+            got = int(self.raw_cluster_cmd('osd', 'last-stat-seq', 'osd.%d' % osd))
+            self.log.info('need seq {need} got {got} for osd.{osd}'.format(
+                need=need, got=got, osd=osd))
+            if got >= need:
+                break
+            A_WHILE = 1
+            time.sleep(A_WHILE)
+            wait_for_mon -= A_WHILE
+        else:
+            raise Exception('timed out waiting for mon to be updated with '
+                            'osd.{osd}: {got} < {need}'.
+                            format(osd=osd, got=got, need=need))
+
+    with parallel() as p:
+        for osd in osds:
+            p.spawn(flush_one_osd, osd, wait_for_mon)
+
 
     def flush_all_pg_stats(self):
         self.flush_pg_stats(range(len(self.get_osd_dump())))
@@ -1923,6 +1973,9 @@ def wait_for_healthy_cluster(self, timeout=300):
 
     def find_remote(self, service_type, service_id):
         """
+        Get the Remote for the host where a particular service runs.
+
+        :param service_type: 'mds', 'osd', 'client'
         Get the Remote for the host where a particular service runs.
 
         :param service_type: 'mds', 'osd', 'client'
@@ -3471,6 +3524,3 @@ remove_pool = utility_task("remove_pool")
 wait_for_clean = utility_task("wait_for_clean")
 flush_all_pg_stats = utility_task("flush_all_pg_stats")
 set_pool_property = utility_task("set_pool_property")
-do_pg_scrub = utility_task("do_pg_scrub")
-wait_for_pool = utility_task("wait_for_pool")
-wait_for_pools = utility_task("wait_for_pools")
