@@ -1781,6 +1781,23 @@ class CephManager:
                 if addrvec_mem['type'] == 'v2':
                     socks.append(addrvec_mem['addr'])
         return tuple(socks)
+def wait_for_healthy_cluster(self, timeout=300):
+    """
+    Wait until the Ceph cluster is healthy or the timeout is reached.
+
+    :param timeout: Time in seconds to wait for the cluster to become healthy.
+    :raises Exception: If the cluster does not become healthy within the timeout.
+    """
+    start_time = time()
+    while time() - start_time < timeout:
+        health = self.get_health()  # Use existing method or implement to fetch health status
+        if health['status'] == 'HEALTH_OK':
+            self.log.info("Cluster is healthy.")
+            return
+        self.log.info("Waiting for cluster to become healthy. Current status: %s", health['status'])
+        sleep(5)  # Wait before rechecking
+
+    raise Exception("Cluster did not become healthy within the timeout period.")
 
     def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
         """
