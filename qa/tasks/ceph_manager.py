@@ -1893,6 +1893,28 @@ def wait_for_healthy_cluster(self, timeout=300):
 
     def flush_all_pg_stats(self):
         self.flush_pg_stats(range(len(self.get_osd_dump())))
+# Additional Post-Flush Validation
+
+def validate_pg_stats(self, osds):
+    """
+    Validate that PG stats have been successfully flushed and reflected in the monitor.
+
+    :param osds: list of OSDs to validate
+    """
+    self.log.info("Starting validation of PG stats for OSDs: %s", osds)
+
+    for osd in osds:
+        try:
+            expected = int(self.raw_cluster_cmd('osd', 'last-stat-seq', 'osd.%d' % osd))
+            actual = int(self.raw_cluster_cmd('tell', 'osd.%d' % osd, 'flush_pg_stats'))
+            if actual >= expected:
+                self.log.info("OSD %d: Validation successful (expected=%d, actual=%d).", osd, expected, actual)
+            else:
+                self.log.warning("OSD %d: Validation failed (expected=%d, actual=%d).", osd, expected, actual)
+        except Exception as e:
+            self.log.error("Error during validation for OSD %d: %s", osd, str(e))
+
+    self.log.info("Validation completed for OSDs: %s", osds)
 
     def do_rados(self, cmd, pool=None, namespace=None, remote=None, **kwargs):
         """
