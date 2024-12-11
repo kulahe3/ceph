@@ -939,6 +939,30 @@ class MgrStandbyModule(ceph_module.BaseMgrStandbyModule, MgrModuleLoggingMixin):
         :return:
         """
         raise NotImplementedError()
+def check_stuck_peering_pgs(self):
+    """
+    Periodically checks for PGs stuck in the peering state and retries resolution.
+    """
+    stuck_pgs = []
+    pgmap = self.get("pg_map")
+
+    for pg in pgmap["pgs"]:
+        if pg["state"] == "peering" and pg["elapsed_time"] > self.config.get("pg_peering_retry_timeout", 60):
+            stuck_pgs.append(pg["pgid"])
+
+    for pgid in stuck_pgs:
+        self.log.warning(f"PG {pgid} is stuck peering for over {self.config.get('pg_peering_retry_timeout')} seconds. Attempting recovery.")
+        self.retry_pg_recovery(pgid)
+
+def retry_pg_recovery(self, pgid):
+    """
+    Triggers recovery actions for a specific PG.
+    """
+    try:
+        self.raw_cluster_cmd("pg", "repair", pgid)
+        self.log.info(f"Triggered repair for PG {pgid}")
+    except Exception as e:
+        self.log.error(f"Failed to trigger repair for PG {pgid}: {str(e)}")
 
     def get_mgr_id(self) -> str:
         return self._ceph_get_mgr_id()
