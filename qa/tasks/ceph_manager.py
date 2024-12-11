@@ -1798,6 +1798,23 @@ def wait_for_healthy_cluster(self, timeout=300):
         sleep(5)  # Wait before rechecking
 
     raise Exception("Cluster did not become healthy within the timeout period.")
+def capture_health_snapshot(self):
+    """
+    Capture and log a snapshot of the cluster's health state.
+
+    This method fetches and logs the current health, OSD map, and PG map.
+    """
+    try:
+        health = self.get_health()  
+        self.log.info("Cluster Health Snapshot: %s", health)
+
+        osd_map = self.raw_cluster_cmd('osd', 'dump')
+        self.log.info("OSD Map Snapshot: %s", osd_map)
+
+        pg_map = self.raw_cluster_cmd('pg', 'dump')
+        self.log.info("PG Map Snapshot: %s", pg_map)
+    except Exception as e:
+        self.log.error("Error capturing health snapshot: %s", str(e))
 
     def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
         """
