@@ -1935,6 +1935,38 @@ def retry_flush_pg_stats(self, osds, max_retries=3, wait_for_mon=300):
     def flush_all_pg_stats(self):
         self.flush_pg_stats(range(len(self.get_osd_dump())))
 # Additional Post-Flush Validation
+def flush_pg_stats_with_timeout(self, osds, no_wait=None, per_osd_timeout=60, wait_for_mon=300):
+    """
+    Flush PG stats with per-OSD timeout monitoring.
+
+    :param osds: List of OSD IDs to flush.
+    :param no_wait: List of OSDs not to wait for seq id.
+    :param per_osd_timeout: Timeout in seconds for each OSD flush.
+    :param wait_for_mon: Wait time for monitor to sync.
+    """
+    if no_wait is None:
+        no_wait = []
+
+    self.log.info("Starting flush_pg_stats_with_timeout for OSDs: %s", osds)
+
+    def flush_one_osd_with_timeout(osd):
+        start_time = time.time()
+        try:
+            self.flush_pg_stats([osd], no_wait=no_wait, wait_for_mon=wait_for_mon)
+            elapsed_time = time.time() - start_time
+            self.log.info("OSD %d: Flush completed in %.2f seconds.", osd, elapsed_time)
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            if elapsed_time > per_osd_timeout:
+                self.log.error("OSD %d: Timed out after %.2f seconds.", osd, elapsed_time)
+            else:
+                self.log.error("OSD %d: Error occurred during flush: %s", osd, str(e))
+
+    with parallel() as p:
+        for osd in osds:
+            p.spawn(flush_one_osd_with_timeout, osd)
+
+    self.log.info("Completed flush_pg_stats_with_timeout for all OSDs: %s", osds)
 
 def validate_pg_stats(self, osds):
     """
