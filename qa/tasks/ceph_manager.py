@@ -1815,6 +1815,30 @@ def capture_health_snapshot(self):
         self.log.info("PG Map Snapshot: %s", pg_map)
     except Exception as e:
         self.log.error("Error capturing health snapshot: %s", str(e))
+def retry_flush_pg_stats(self, osds, max_retries=3, wait_for_mon=300):
+    """
+    Retry flushing PG stats for a list of OSDs if the operation fails.
+
+    :param osds: List of OSD IDs to flush.
+    :param max_retries: Maximum number of retries per OSD.
+    :param wait_for_mon: Wait time for the monitor to sync.
+    """
+    for attempt in range(1, max_retries + 1):
+        self.log.info("Attempt %d/%d: Flushing PG stats for OSDs: %s", attempt, max_retries, osds)
+        try:
+            self.flush_pg_stats(osds, wait_for_mon=wait_for_mon)
+            self.log.info("Successfully flushed PG stats for OSDs: %s", osds)
+            return
+        except Exception as e:
+            self.log.warning("Attempt %d failed for OSDs %s: %s", attempt, osds, str(e))
+
+        # If this is not the final attempt, log retry info
+        if attempt < max_retries:
+            self.log.info("Retrying flush_pg_stats (attempt %d/%d)...", attempt + 1, max_retries)
+
+    # If all retries fail, log and raise an exception
+    self.log.error("Failed to flush PG stats after %d attempts for OSDs: %s", max_retries, osds)
+    raise Exception("Exceeded maximum retries for flushing PG stats: %s" % osds)
 
     def flush_pg_stats(self, osds, no_wait=None, wait_for_mon=300):
         """
