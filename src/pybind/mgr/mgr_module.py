@@ -1314,6 +1314,34 @@ class MgrModule(ceph_module.BaseMgrModule, MgrModuleLoggingMixin):
                     db.execute(sql)
             if version < latest:
                 self.update_schema_version(db, latest)
+def enhanced_health_alerts(self):
+    """
+    Enhance health alerts for PGs stuck in the peering state.
+    """
+    pgmap = self.get("pg_map")
+    alerts = []
+
+    for pg in pgmap["pg_stats"]:
+        if "peering" in pg["state"]:
+            elapsed_time = pg.get("elapsed_time", 0)
+            timeout = self.get_config("pg_peering_retry_timeout", default=60)
+            if elapsed_time > timeout:
+                alerts.append(
+                    f"PG {pg['pgid']} has been in peering state for {elapsed_time} seconds. "
+                    f"Acting set: {pg.get('acting')}. Consider triggering recovery or reviewing logs."
+                )
+
+    if alerts:
+        self.log.warning("Enhanced Health Alerts for PG Availability:\n" + "\n".join(alerts))
+        self.raw_cluster_cmd("health", "warn", "PG_AVAILABILITY", "\n".join(alerts))
+def serve(self):
+    self.log.info("Starting Ceph Manager service.")
+
+    # Existing periodic tasks
+    self.set_timer("check_stuck_peering_pgs", 60, self.check_stuck_peering_pgs)
+
+    # Ensure enhanced health alerts run periodically
+    self.set_timer("enhanced_health_alerts", 60, self.enhanced_health_alerts)
 
     def load_schema(self, db: sqlite3.Connection) -> None:
         SQL = """
